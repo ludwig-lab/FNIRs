@@ -5,8 +5,577 @@ import scipy.io as sio
 from matplotlib import pyplot as plt
 import seaborn as sns
 import matplotlib as mpl
+from matplotlib import get_backend as mpl_get_backend
 from scipy import signal
 from scipy import fft
+import plotly.graph_objs as go
+
+class flexNIRs():
+
+    def __init__(self, filePATH):
+        flex_data = sio.loadmat(filePATH, struct_as_record = True)['data'][0,0]
+
+        #Metadata
+        self.file_path = filePATH
+        self.fs = np.squeeze(flex_data['fs']).item()
+        self.time = np.squeeze(flex_data['Time'])
+        self.wv = flex_data['wv']
+        self.sds = flex_data['sds']
+        self.extinctionCoeff = flex_data['extinctionC']
+        self.stimDF = None
+
+        #Channels
+        self.raw_channels = ['SS Red', 'SS IR',
+                    'D1 Ambient', 'D1 LS Red', 'D1 LL Red', 'D1 LS IR', 'D1 LL IR',
+                    'D3 Ambient', 'D3 LS Red', 'D3 LL Red', 'D3 LS IR', 'D3 LL IR']
+
+        self.channels = ['SS Red', 'SS IR',
+                         'D1 LS Red', 'D1 LL Red', 'D1 LS IR', 'D1 LL IR',
+                         'D3 LS Red', 'D3 LL Red', 'D3 LS IR', 'D3 LL IR']
+
+        #Variable Assumptions from flexNIRs MATLAB (self_calibrated_fNIRs function)
+        self.waterP = flex_data['waterP']
+        self.msp = flex_data['msp']
+
+        #Calculated coefficient variables from flexNIRs MATLAB (self_calibrated_fNIRs function)
+        self.muaLIST = np.squeeze(flex_data['muaList'])
+        self.est_dpfs = np.squeeze(flex_data['est_dpfs'])
+
+        #Calculated coefficient variables from flexNIRs MATLAB (est_dpfs function)
+        self.dpfs = np.squeeze(flex_data['dpfs'])
+
+        #Raw data from flexNIRs MATLAB script.  Remove ambient channels and adjust dataframe to match others
+        self.raw_data = pd.DataFrame(flex_data['raw_data'], columns = self.raw_channels)
+        self.ambient_data = self.raw_data[['D1 Ambient', 'D3 Ambient']]
+        self.raw_data.drop(columns = ['D1 Ambient', 'D3 Ambient'], inplace=True)
+
+        #Unfiltered OD/Mua calculated by flexNIRs MATLAB script
+        self.d_OD = pd.DataFrame(flex_data['deltaOD_raw'], columns = self.channels)
+        self.d_Mua = pd.DataFrame(flex_data['deltaMua_raw'], columns = self.channels)
+
+        #Filtered OD & Mua calculated by flexNIRs MATLAB Script
+        self.d_OD_filt = pd.DataFrame(flex_data['deltaOD_filt'], columns = self.channels)
+        self.d_Mua_filt = pd.DataFrame(flex_data['deltaMua_filt'], columns = self.channels)
+
+        self.calc_hemoglobin()
+
+    def manual_alignment(self, stimDF, stim_start_index):
+        """Iterate through the stim dataframe and add stimulation start times to each row"""
+        stim_index = stim_start_index
+        stim_time = self.time[stim_index]
+
+        """Get Indices of (approximate) times of all times and indices based on the first stim alignment"""
+        fnirs_fs = self.fs
+        fnirs_dt = 1 / fnirs_fs
+
+        first_stim = stimDF.index[0][1]
+
+        for stim_count, stim in enumerate(stimDF.index):
+
+            # Sets up first stimulation data
+            if stim[1] == first_stim:
+                stimDF.loc[(0, first_stim), 'fNIRs onset index'] = stim_index
+                stimDF.loc[(0, first_stim), 'fNIRs onset time (s)'] = stim_time
+
+                stimDF.loc[(0, first_stim), 'fNIRs offset time (s)'] = stim_time + (
+                        stimDF.loc[(0, first_stim), 'duration (ms)'] * 1e-3)
+
+                stimDF.loc[(0, first_stim), 'fNIRs offset index'] = (
+                            stimDF.loc[(0, first_stim), 'fNIRs offset time (s)'] / fnirs_dt).astype(int)
+                stim_idx_span = stimDF.loc[(0, first_stim), 'fNIRs offset index'] - stimDF.loc[
+                    (0, first_stim), 'fNIRs onset index']
+
+            else:
+                # Start of stimulation relative to first stimulation
+                stim_start = stimDF.loc[stim, 'onset time (s)'] - stimDF.loc[(0, first_stim), 'onset time (s)']
+
+                # Add time difference between current stim and first stim to fNIRs time
+                stimDF.loc[stim, 'fNIRs onset time (s)'] = stimDF.loc[
+                                                               (0, first_stim), 'fNIRs onset time (s)'] + stim_start
+                stimDF.loc[stim, 'fNIRs onset index'] = (stimDF.loc[stim, 'fNIRs onset time (s)'] / fnirs_dt).astype(
+                    int)
+
+                # Add offset time based on duration of current stim
+                stimDF.loc[stim, 'fNIRs offset time (s)'] = stimDF.loc[stim, 'fNIRs onset time (s)'] + (
+                        stimDF.loc[stim, 'duration (ms)'] * 1e-3)
+
+                """This ensures stimulation spans same # indices to account for discrepancies in sampling rates"""
+                # stimDF.loc[stim, 'fNIRs offset index'] = (stimDF.loc[stim, 'fNIRs offset time (s)'] / fnirs_dt).astype(int)
+                stimDF.loc[stim, 'fNIRs offset index'] = (stimDF.loc[stim, 'fNIRs onset index'] + stim_idx_span).astype(
+                    int)
+        #stimDF.reset_index(inplace=True)
+        self.stimDF = stimDF
+
+    def calc_hemoglobin(self):
+        """Calculated HB changes per channel"""
+        channel_pairs = {'SS': ['SS Red', 'SS IR'],
+                         'D1 LS': ['D1 LS Red', 'D1 LS IR'],
+                         'D1 LL': ['D1 LL Red', 'D1 LL IR'],
+                         'D3 LS': ['D3 LS Red', 'D3 LS IR'],
+                         'D3 LL': ['D3 LL Red', 'D3 LL IR'], }
+        # channel_pairs = [(0,1),(2,4),(3,5),(6,8),(7,9)]
+        exC = self.extinctionCoeff[:, 0:2]
+
+        hemo_data = []
+        hemo_data_f = []
+        hemo_chanLIST = []
+
+        for pair in channel_pairs:
+            ch_red = channel_pairs[pair][0]
+            ch_ir = channel_pairs[pair][1]
+
+            #Unfiltered Mua values
+            data_red = self.d_Mua[ch_red].values
+            data_ir = self.d_Mua[ch_ir].values
+
+            d = np.vstack((data_red, data_ir))
+            Hb = np.matmul(exC ** -1, d)
+
+            hemo_data.append(Hb[0, :])
+            hemo_data.append(Hb[1, :])
+
+            #Filtered Mua Values
+            data_red_f = self.d_Mua_filt[ch_red].values
+            data_ir_f = self.d_Mua_filt[ch_ir].values
+            d_f = np.vstack((data_red_f, data_ir_f))
+            Hb_f = np.matmul(exC ** -1, d_f)
+
+            hemo_data_f.append(Hb_f[0, :])
+            hemo_data_f.append(Hb_f[1, :])
+
+            #Channel Names
+            hemo_chan_red = pair + ' HbO'
+            hemo_chan_ir = pair + ' HbR'
+            hemo_chanLIST.append(hemo_chan_red)
+            hemo_chanLIST.append(hemo_chan_ir)
+
+        self.hemoDF = pd.DataFrame(np.column_stack(hemo_data), columns=hemo_chanLIST)
+        self.hemoDF_f = pd.DataFrame(np.column_stack(hemo_data_f), columns=hemo_chanLIST)
+
+    def bandpass_filter(self, data_type, filter_cutoffs=(0.01, 0.2), transition_width=0.01, numtaps=30001,freq_plot=False):
+
+        dataDF, chan_list = self.get_data(data_type)
+
+        """Setup Filter"""
+        fs = self.fs
+        filt_data = []
+        filter_weights = signal.firwin(numtaps, filter_cutoffs, width=transition_width, window='Hamming',
+                                       pass_zero='bandpass', fs=fs)
+        if freq_plot:
+            w, h = signal.freqz(filter_weights, worN=fft.next_fast_len(40000, real=True))
+            plt.plot((w / np.pi) * (fs / 2), 20 * np.log10(np.abs(h)))
+            plt.xlim((0, 2))
+            plt.xlabel('Frequency (Hz)')
+            plt.ylabel('Amplitude (dB)')
+            plt.show()
+
+        for chan in chan_list:
+            data = dataDF[chan].to_numpy()
+            padded_data = pad_noise(data, numtaps, 5000)
+            filtered_data = np.flip(
+                signal.fftconvolve(np.flip(signal.fftconvolve(padded_data, filter_weights, mode='same')),
+                                   filter_weights, mode='same'))
+            filt_data.append(filtered_data[numtaps:-numtaps])
+
+        # self.raw_data_f = pd.DataFrame(np.column_stack(filt_data), columns = chan_list)
+        self.overwrite_data(data_to_write = pd.DataFrame(filt_data, columns=chan_list), data_type=data_type)
+
+    def ssr_regression(self, data_type):
+
+        dataDF, channels = self.get_data(data_type)
+        red_channels = ['D1 LS Red', 'D1 LL Red', 'D3 LS Red', 'D3 LL Red']
+        ir_channels = ['D1 LS IR', 'D1 LL IR', 'D3 LS IR', 'D3 LL IR']
+        ss_red_ch = 'SS Red'
+        ss_ir_ch = 'SS IR'
+
+        if 'Hemo' in data_type:
+            red_channels = ['D1 LS HbO', 'D1 LL HbO', 'D3 LS HbO', 'D3 LL HbO']
+            ir_channels = ['D1 LS HbR', 'D1 LL HbR', 'D3 LS HbR', 'D3 LL HbR']
+            ss_red_ch = 'SS HbO'
+            ss_ir_ch = 'SS HbR'
+
+        ssr_data = []
+        ssr_ch_name = []
+        
+        #Cleaning Red Channels
+        ss_red = dataDF[ss_red_ch].to_numpy()
+        for chan in red_channels:
+            d = dataDF[chan].to_numpy()
+            alpha = np.dot(ss_red, d) / np.dot(ss_red,ss_red)
+            d_ssr = d - (alpha * ss_red)
+            ssr_ch_name.append(chan + ' SSR')
+            ssr_data.append(d_ssr)
+
+        # Cleaning IR Channels
+        ss_ir = dataDF[ss_ir_ch].to_numpy()
+        for chan in ir_channels:
+            d = dataDF[chan].to_numpy()
+            alpha = np.dot(ss_ir, d) / np.dot(ss_ir, ss_ir)
+            d_ssr = d - (alpha * ss_ir)
+            ssr_ch_name.append(chan + ' SSR')
+            ssr_data.append(d_ssr)
+
+        if 'filt' in data_type:
+            self.ssrDF_f = pd.DataFrame(np.column_stack(ssr_data), columns = ssr_ch_name)
+        else:
+            self.ssrDF = pd.DataFrame(np.column_stack(ssr_data), columns=ssr_ch_name)
+            
+    def get_data(self, data_type = None):
+        channels = ['SS Red', 'SS IR', 'D1 LS Red', 'D1 LL Red', 'D1 LS IR', 'D1 LL IR', 
+                    'D3 LS Red', 'D3 LL Red', 'D3 LS IR', 'D3 LL IR']
+        if data_type == 'raw':
+            dataDF = self.raw_data.copy()
+        elif data_type == 'raw_filt':
+            dataDF = self.raw_data_f.copy()
+        elif data_type == 'OD':
+            dataDF = self.d_OD.copy()
+        elif data_type == 'OD_filt':
+            dataDF = self.d_OD_filt.copy()
+        elif data_type == 'Mua':
+            dataDF = self.d_Mua.copy()
+        elif data_type == 'Mua_filt':
+            dataDF = self.d_Mua_filt.copy()
+        elif data_type == 'Hemo':
+            channels = ['SS HbO', 'SS HbR', 'D1 LS HbO', 'D1 LL HbO', 'D1 LS HbR', 'D1 LL HbR',
+                        'D3 LS HbO', 'D3 LL HbO', 'D3 LS HbR', 'D3 LL HbR']
+            dataDF = self.hemoDF.copy()
+        elif data_type == 'Hemo_filt':
+            channels = ['SS HbO', 'SS HbR', 'D1 LS HbO', 'D1 LL HbO', 'D1 LS HbR', 'D1 LL HbR',
+                        'D3 LS HbO', 'D3 LL HbO', 'D3 LS HbR', 'D3 LL HbR']
+            dataDF = self.hemoDF_f.copy()
+        elif data_type == 'SSR':
+            dataDF = self.ssrDF.copy()
+        elif data_type == 'SSR_filt':
+            dataDF =self.ssrDF_f.copy()
+        else:
+            raise ValueError("Data type not recognized. Data type must be 'raw', 'OD', 'Mua', 'Hemo', or 'SSR'. With '_filt' added for filtered versions.")
+
+        return dataDF, channels
+
+    def overwrite_data(self, data_to_write, data_type = None):
+
+        if data_type == 'raw':
+            self.raw_data = data_to_write
+        elif data_type == 'raw_filt':
+            self.raw_data_f  = data_to_write
+        elif data_type == 'OD':
+            self.d_OD  = data_to_write
+        elif data_type == 'OD_filt':
+            self.d_OD_filt  = data_to_write
+        elif data_type == 'Mua':
+            self.d_Mua  = data_to_write
+        elif data_type == 'Mua_filt':
+            self.d_Mua_filt = data_to_write
+        elif data_type == 'Hemo':
+            self.hemoDF  = data_to_write
+        elif data_type == 'Hemo_filt':
+            self.hemoDF_f  = data_to_write
+        elif data_type == 'SSR':
+            self.ssrDF = data_to_write
+        elif data_type == 'SSR_filt':
+            self.ssrDF_f = data_to_write
+        else:
+            raise ValueError(
+                "Data type not recognized. Data type must be 'raw', 'OD', 'Mua','Hemo', or 'SSR', with '_filt' added for filtered versions.")
+
+    def plot_artifact(self, channel, fc = 1, width = 1, numtaps = 3001, show_stim = False):
+        filter_cutoff = fc
+        transition_width = width
+
+        filter_weights = signal.firwin(numtaps, filter_cutoff, width=transition_width, window='Hamming',
+                                       pass_zero='highpass', fs=self.fs)
+        w, h = signal.freqz(filter_weights, worN=fft.next_fast_len(40000, real=True))
+
+        """flexNIRs High-pass Artifact Filtering -- WIP"""
+        data_cols = ['D1 Ambient', 'D3 Ambient']
+        artDF = self.ambient_data.copy()
+        artDF['Time (s)'] = self.time
+
+        for col in data_cols:
+            data = artDF[col].to_numpy()
+            padded_data = data  # pad_noise(data, numtaps, 5000)
+            filtered_data = np.flip(
+                signal.fftconvolve(np.flip(signal.fftconvolve(padded_data, filter_weights, mode='same')), filter_weights,
+                                   mode='same'))
+            name = col + ' Filtered'
+            artDF[name] = filtered_data  # [numtaps:-numtaps]
+
+        """Plotly plot for looking at stim artifact in flexNIRs data"""
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(x=artDF['Time (s)'], y=artDF[channel], customdata=artDF.index, hovertemplate='%{customdata:.1f}'))
+
+        if show_stim == True:
+            if self.stimDF is not None:
+                for param in self.stimDF.index:
+                    fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'], x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+            else:
+                raise ValueError('Stimulation alignment data not found.')
+        fig.show()
+
+    def plot_channel(self, data_type, channel, plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
+                     show = True, legend = False, title = None):
+
+        fs = self.fs
+        plotDF, _ = self.get_data(data_type)
+
+        channel_pairs = {'SS': ['SS Red', 'SS IR'],
+                         'D1 LS': ['D1 LS Red', 'D1 LS IR'],
+                         'D1 LL': ['D1 LL Red', 'D1 LL IR'],
+                         'D3 LS': ['D3 LS Red', 'D3 LS IR'],
+                         'D3 LL': ['D3 LL Red', 'D3 LL IR'],}
+        if 'SSR' in data_type:
+            channel_pairs = {'SS': ['SS Red', 'SS IR'],
+                             'D1 LS': ['D1 LS Red SSR', 'D1 LS IR SSR'],
+                             'D1 LL': ['D1 LL Red SSR', 'D1 LL IR SSR'],
+                             'D3 LS': ['D3 LS Red SSR', 'D3 LS IR SSR'],
+                             'D3 LL': ['D3 LL Red SSR', 'D3 LL IR SSR'], }
+        elif 'Hemo' in data_type:
+            channel_pairs = {'SS': ['SS HbO', 'SS HbR'],
+                             'D1 LS': ['D1 LS HbO', 'D1 LS HbR'],
+                             'D1 LL': ['D1 LL HbO', 'D1 LL HbR'],
+                             'D3 LS': ['D3 LS HbO', 'D3 LS HbR'],
+                             'D3 LL': ['D3 LL HbO', 'D3 LL HbR'],}
+
+        pre_BL_idx_width = int(pre_time * fs)
+        post_BL_idx_width = int(post_time * fs)
+
+        if self.stimDF is None:
+            raise ValueError('Stimulation alignment data not found.')
+        else:
+            stimDF = self.stimDF.copy()
+            # Label data points based on stimulation #
+            for idx, stim in enumerate(stimDF.index):
+                stim_start_idx = stimDF.loc[stim, 'fNIRs onset index']
+                stim_stop_idx = stimDF.loc[stim, 'fNIRs offset index']
+
+                plot_start_idx = (stim_start_idx - pre_BL_idx_width).astype(int)
+                plot_stop_idx = (stim_stop_idx + post_BL_idx_width).astype(int)
+
+                if plot_stop_idx > len(plotDF):
+                    raise Exception('Plot stop index exceeds plot length. Reduce post-stimulation time.')
+
+                plotDF.loc[plot_start_idx:plot_stop_idx, 'Stim #'] = str(idx + 1)
+
+                # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
+                time_span = plot_stop_idx - plot_start_idx + 1
+                time = np.arange(-pre_BL_idx_width, time_span - pre_BL_idx_width, 1) / fs
+
+                plotDF.loc[plot_start_idx:plot_stop_idx, 'Trial Time'] = time
+
+            plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
+
+            if plot_style == 'stacked':
+
+                fig, ax = plt.subplots(figsize=fig_size, nrows=2)
+                ax = ax.ravel()
+                for idx, chan in enumerate(channel_pairs[channel]):
+
+                    # Shifts data so all trials start at 0
+                    if zero_shift:
+                        for stim_num in plotDF['Stim #'].unique():
+                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
+                                                                                 plotDF['Stim #'] == stim_num, chan] - \
+                                                                             plotDF.loc[zero_point, chan].item()
+
+                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx], legend=legend)
+                    ax[idx].set_title(chan)
+                    ax[idx].set_xlabel('Time (s)')
+                    ax[idx].set_ylabel('A.U.')
+
+                # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
+                # last stim only
+                ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+            elif plot_style== 'average':
+                fig, ax = plt.subplots(figsize=fig_size)
+                for idx, chan in enumerate(channel_pairs[channel]):
+                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, errorbar='sd', ax=ax, label=chan)
+                ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+            elif plot_style == 'Full':
+
+                fig, ax = plt.subplots(figsize=fig_size, nrows=3, sharex=True)
+                ax = ax.ravel()
+                for idx, chan in enumerate(channel_pairs[channel]):
+                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, errorbar='sd', ax=ax[0], label=chan)
+                ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                ax[0].set_title(channel + ' Trial Average (mean ' + r'$\pm$' + ' s.d.)')
+                ax[0].set_ylabel('A.U.')
+                ax[0].legend(loc='upper right')
+
+                for idx, chan in enumerate(channel_pairs[channel]):
+
+                    # Shifts data so all trials start at 0
+                    if zero_shift:
+                        for stim_num in plotDF['Stim #'].unique():
+                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
+                                                                                 plotDF['Stim #'] == stim_num, chan] - \
+                                                                             plotDF.loc[zero_point, chan].item()
+
+                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx + 1], legend=legend)
+                    ax[idx + 1].set_title(chan)
+                    ax[idx + 1].set_xlabel('Time (s)')
+                    ax[idx + 1].set_ylabel('A.U.')
+
+                # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
+                # last stim only
+                ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                ax[2].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                if legend:
+                    ax[1].legend(loc='upper right')
+                    ax[2].legend(loc='upper right')
+
+            fig.tight_layout()
+
+            if title:
+                fig.suptitle(title)
+
+            if show:
+                backend = mpl_get_backend()
+                fig.tight_layout()
+                if backend == "module://ipympl.backend_nbagg":
+                    fig.canvas.header_visible = False
+                    fig.canvas.footer_visible = False
+                    fig.show()
+                else:
+                    plt.show()
+                    plt.close(fig)
+                return None
+            else:
+                return ax
+
+    def ssr_plot(self, data_type, channel, show_stim = False, show_ss = True):
+
+        ssr_channel = channel + ' SSR'
+
+        d = self.get_data(data_type)[0]
+        if 'filt' in data_type:
+            ssr_d = self.get_data(data_type = 'SSR_filt')[0]
+        else:
+            ssr_d = self.get_data(data_type = 'SSR')[0]
+
+        if 'Red' in channel:
+            if 'Hemo' in data_type:
+                ss_channel = 'SS HbO'
+            else:
+                ss_channel = 'SS Red'
+        else:
+            if 'Hemo' in data_type:
+                ss_channel = 'SS HbR'
+            else:
+                ss_channel = 'SS IR'
+
+        print('Data Channel: ' + channel)
+        print('Short-Separation Channel: ' + ss_channel)
+
+        # Construct dictionary of original data, SSR regressed data, and SS channel for plotting
+        if show_ss:
+            plot_dct = {'Orig. Data' : d[channel], #Non-regressed data
+                        'SSR Data' : ssr_d[ssr_channel], #Data with short-channel regression
+                        'SS Data' : d[ss_channel], #Short-channel from non-regressed data
+                        }
+        else:
+            plot_dct = {'Orig. Data' : d[channel], #Non-regressed data
+                        'SSR Data' : ssr_d[ssr_channel], #Data with short-channel regression
+                        }
+
+        fig = go.Figure()
+
+        for data in plot_dct:
+            fig.add_trace(go.Scatter(x = self.time, y = plot_dct[data], name = data))
+
+        if show_stim:
+            if self.stimDF is not None:
+                for param in self.stimDF.index:
+                    fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'],
+                              x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+            else:
+                raise ValueError('Stimulation alignment data not found.')
+        fig.show()
+
+    def plot_channel_interactive(self, data_type, channel, show_stim = False):
+
+        d = self.get_data(data_type)[0][channel]
+
+        dct = {'Data':d, 'Time (s)':self.time}
+
+        plotDF = pd.DataFrame(data=dct)
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(x=plotDF['Time (s)'], y=plotDF['Data'], customdata=plotDF.index,
+                       hovertemplate='%{customdata:.1f}'))
+
+        if show_stim == True:
+            if self.stimDF is not None:
+                for param in self.stimDF.index:
+                    fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'],
+                                  x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+            else:
+                raise ValueError('Stimulation alignment data not found.')
+        fig.show()
+
+def _plt_setup_fig_axis(axis=None, fig_size=(5, 3), subplots=(1, 1), **kwargs):
+    """Convenience function to setup a figure axis
+
+    Parameters
+    ----------
+    axis : None, matplotlib.axis.Axis
+        Either None to use a new axis or matplotlib axis to plot on.
+    fig_size : tuple, list, np.ndarray
+        The size (width, height) of the matplotlib figure.
+    subplots : tuple
+        The num rows, num columns of axis to plot on.
+    **kwargs
+        Keyword arguments to pass to fig.add_subplot.
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+        matplotlib figure reference.
+    ax : matplotlib.axis.Axis
+        matplotlib axis reference.
+    """
+    plt.ioff()
+    if axis is None:
+        fig, ax = plt.subplots(*subplots, figsize=fig_size, **kwargs)
+    else:
+        fig = axis.figure
+        ax = axis
+    return fig, ax
+
+def _plt_show_fig(fig, ax, show):
+    """Convenience function to show a figure axis.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        matplotlib figure reference.
+    ax : matplotlib.axis.Axis
+        matplotlib axis reference.
+    show: bool
+        Boolean value indicating if the plot should be displayed.
+    Returns
+    -------
+    ax : matplotlib.axis.Axis
+        matplotlib axis reference.
+    """
+    if show:
+        backend = mpl_get_backend()
+        fig.tight_layout()
+        if backend == "module://ipympl.backend_nbagg":
+            fig.canvas.header_visible = False
+            fig.canvas.footer_visible = False
+            fig.show()
+        else:
+            plt.show()
+            plt.close(fig)
+        return None
+    else:
+        return ax
 
 def plux_import(filePATH):
     """"fNIRS Data Import -- for PLUX files"""
