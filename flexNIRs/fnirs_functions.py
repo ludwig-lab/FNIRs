@@ -9,6 +9,7 @@ from matplotlib import get_backend as mpl_get_backend
 from scipy import signal
 from scipy import fft
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 
 class flexNIRs():
 
@@ -58,6 +59,7 @@ class flexNIRs():
         self.d_Mua_filt = pd.DataFrame(flex_data['deltaMua_filt'], columns = self.channels)
 
         self.calc_hemoglobin()
+        self.calc_hr(channel = 'SS Red')
 
     def manual_alignment(self, stimDF, stim_start_index):
         """Iterate through the stim dataframe and add stimulation start times to each row"""
@@ -179,6 +181,53 @@ class flexNIRs():
 
         # self.raw_data_f = pd.DataFrame(np.column_stack(filt_data), columns = chan_list)
         self.overwrite_data(data_to_write = pd.DataFrame(filt_data, columns=chan_list), data_type=data_type)
+
+    def calc_hr(self, channel, filter_cutoffs = (1,40), peak_height = None, peak_distance = None, transition_width=0.01, numtaps=3001, smoothing_window = 3, check_plot=False):
+        fs = self.fs
+        filter_weights = signal.firwin(numtaps, filter_cutoffs, width=transition_width, window='Hamming',
+                                       pass_zero='bandpass', fs=fs)
+
+        w, h = signal.freqz(filter_weights, worN=fft.next_fast_len(40000, real=True))
+
+        data = self.raw_data[channel].to_numpy()
+        padded_data = pad_noise(data, numtaps, 5000)
+        data_f = np.flip(
+            signal.fftconvolve(np.flip(signal.fftconvolve(padded_data, filter_weights, mode='same')), filter_weights,
+                               mode='same'))[numtaps:-numtaps]
+
+        if peak_height is not None:
+            height = peak_height
+        else:
+            height = 1000
+
+        if peak_distance is not None:
+            distance = peak_distance
+        else:
+            distance = fs * 0.25
+
+        peaks, _ = signal.find_peaks(data_f, height = height, distance = distance)
+        peaks = peaks[1:-1] #drops first/last values of peaks due to risk of odd behaviors at start/end of recording
+
+        if check_plot:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=self.time, y=data_f))
+            fig.add_trace(go.Scatter(x=self.time[peaks], y=data_f[peaks], mode='markers'))
+            fig.show()
+
+        peak_dt = np.diff(peaks) / self.fs  # Time between peaks in seconds
+
+        idx = [int((peaks[i] + peaks[i + 1]) / 2) for i in np.arange(len(peaks) - 1)]
+        peak_time = self.time[idx]
+        bpm = 60 / peak_dt  # Instantaneous Heart rate in BPM based on peak_dt
+
+        # Construct ECG dataframe?
+        ecg_dct = {'peak_idx': idx,
+                   'peak_dt': peak_dt,
+                   'Time (s)': peak_time,
+                   'b2b bpm': bpm}
+
+        self.ecgDF = pd.DataFrame(ecg_dct)
+        self.ecgDF['avg. bpm'] = self.ecgDF['b2b bpm'].rolling(window=smoothing_window).mean()
 
     def ssr_regression(self, data_type):
 
@@ -308,7 +357,9 @@ class flexNIRs():
         if show_stim == True:
             if self.stimDF is not None:
                 for param in self.stimDF.index:
-                    fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'], x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+                    fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'],
+                                  x1=self.stimDF.loc[param]['fNIRs offset time (s)'],
+                                  line_width=0, fillcolor='red', opacity=0.15)
             else:
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
@@ -448,7 +499,7 @@ class flexNIRs():
             else:
                 return ax
 
-    def ssr_plot(self, data_type, channel, show_stim = False, show_ss = True):
+    def ssr_plot(self, data_type, channel, show_stim = False, show_ss = True, show_hr = False, hr_chan = 'b2b'):
 
         ssr_channel = channel + ' SSR'
 
@@ -483,21 +534,31 @@ class flexNIRs():
                         'SSR Data' : ssr_d[ssr_channel], #Data with short-channel regression
                         }
 
-        fig = go.Figure()
+        #fig = go.Figure()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
 
         for data in plot_dct:
             fig.add_trace(go.Scatter(x = self.time, y = plot_dct[data], name = data))
+
+        if show_hr:
+
+            if hr_chan == 'b2b':
+                hr_plot_chan = 'b2b bpm'
+            elif hr_chan == 'smooth':
+                hr_plot_chan = 'avg. bpm'
+            fig.add_trace(go.Scatter(x = self.ecgDF['Time (s)'], y = self.ecgDF[hr_plot_chan], name = 'HR (bpm)', line_color = 'gray', opacity = 0.75), secondary_y=True)
 
         if show_stim:
             if self.stimDF is not None:
                 for param in self.stimDF.index:
                     fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'],
-                              x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+                                  x1=self.stimDF.loc[param]['fNIRs offset time (s)'],
+                                  line_width=0, fillcolor='red', opacity=0.15)
             else:
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
 
-    def plot_channel_interactive(self, data_type, channel, show_stim = False):
+    def plot_channel_interactive(self, data_type, channel, show_stim = False, show_hr = False, hr_chan = 'b2b'):
 
         d = self.get_data(data_type)[0][channel]
 
@@ -505,16 +566,27 @@ class flexNIRs():
 
         plotDF = pd.DataFrame(data=dct)
 
-        fig = go.Figure()
+        #fig = go.Figure()
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
         fig.add_trace(
             go.Scatter(x=plotDF['Time (s)'], y=plotDF['Data'], customdata=plotDF.index,
-                       hovertemplate='%{customdata:.1f}'))
+                       hovertemplate='%{customdata:.1f}', name = channel))
+
+        if show_hr:
+
+            if hr_chan == 'b2b':
+                hr_plot_chan = 'b2b bpm'
+            elif hr_chan == 'smooth':
+                hr_plot_chan = 'avg. bpm'
+            fig.add_trace(go.Scatter(x = self.ecgDF['Time (s)'], y = self.ecgDF[hr_plot_chan], name = 'HR (bpm)', line_color = 'gray', opacity = 0.75), secondary_y=True)
 
         if show_stim == True:
             if self.stimDF is not None:
                 for param in self.stimDF.index:
                     fig.add_vrect(x0=self.stimDF.loc[param]['fNIRs onset time (s)'],
-                                  x1=self.stimDF.loc[param]['fNIRs offset time (s)'])
+                                  x1=self.stimDF.loc[param]['fNIRs offset time (s)'],
+                                  line_width = 0, fillcolor='red', opacity = 0.15)
             else:
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
