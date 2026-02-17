@@ -14,8 +14,7 @@ from plotly.subplots import make_subplots
 
 class flexNIRs():
 
-    def \
-            __init__(self, filePATH):
+    def __init__(self, filePATH):
         flex_data = sio.loadmat(filePATH, struct_as_record = True)['data'][0,0]
 
         #Metadata
@@ -175,8 +174,8 @@ class flexNIRs():
             hemo_data_f.append(Hb_f[0, :] + Hb_f[1, :])
 
             #Channel Names
-            hemo_chan_red = pair + ' HbO'
-            hemo_chan_ir = pair + ' HbR'
+            hemo_chan_red = ch_red
+            hemo_chan_ir = ch_ir
             hemo_chan_total = pair + ' HbT'
             hemo_chanLIST.append(hemo_chan_red)
             hemo_chanLIST.append(hemo_chan_ir)
@@ -261,40 +260,44 @@ class flexNIRs():
         self.ecgDF['avg. bpm'] = self.ecgDF['b2b bpm'].rolling(window=smoothing_window).mean()
 
     def ssr_regression(self, data_type):
+        self.SSR_dtype = data_type
+        dataDF = self.get_data(data_type)
+        #return dataDF
 
-        dataDF, channels = self.get_data(data_type)
         red_channels = ['D1 LS Red', 'D1 LL Red', 'D3 LS Red', 'D3 LL Red']
         ir_channels = ['D1 LS IR', 'D1 LL IR', 'D3 LS IR', 'D3 LL IR']
         ss_red_ch = 'SS Red'
         ss_ir_ch = 'SS IR'
 
         if 'Hemo' in data_type:
-            red_channels = ['D1 LS HbO', 'D1 LL HbO', 'D3 LS HbO', 'D3 LL HbO']
-            ir_channels = ['D1 LS HbR', 'D1 LL HbR', 'D3 LS HbR', 'D3 LL HbR']
+            # red_channels = ['D1 LS HbO', 'D1 LL HbO', 'D3 LS HbO', 'D3 LL HbO']
+            # ir_channels = ['D1 LS HbR', 'D1 LL HbR', 'D3 LS HbR', 'D3 LL HbR']
             HbT_channels = ['D1 LS HbT', 'D1 LL HbT', 'D3 LS HbT', 'D3 LL HbT']
-            ss_red_ch = 'SS HbO'
-            ss_ir_ch = 'SS HbR'
+            # ss_red_ch = 'SS HbO'
+            # ss_ir_ch = 'SS HbR'
             ss_HbT_ch = 'SS HbT'
 
         ssr_data = []
         ssr_ch_name = []
         
-        #Cleaning Red Channels
+        #Regressing Red Channels
         ss_red = dataDF[ss_red_ch].to_numpy()
         for chan in red_channels:
             d = dataDF[chan].to_numpy()
             alpha = np.dot(ss_red, d) / np.dot(ss_red,ss_red)
             d_ssr = d - (alpha * ss_red)
-            ssr_ch_name.append(chan + ' SSR')
+            #ssr_ch_name.append(chan + ' SSR')
+            ssr_ch_name.append(chan)
             ssr_data.append(d_ssr)
 
-        # Cleaning IR Channels
+        # Regressing IR Channels
         ss_ir = dataDF[ss_ir_ch].to_numpy()
         for chan in ir_channels:
             d = dataDF[chan].to_numpy()
             alpha = np.dot(ss_ir, d) / np.dot(ss_ir, ss_ir)
             d_ssr = d - (alpha * ss_ir)
-            ssr_ch_name.append(chan + ' SSR')
+            # ssr_ch_name.append(chan + ' SSR')
+            ssr_ch_name.append(chan)
             ssr_data.append(d_ssr)
 
         if 'Hemo' in data_type:
@@ -303,7 +306,8 @@ class flexNIRs():
                 d = dataDF[chan].to_numpy()
                 alpha = np.dot(ss_HbT, d) / np.dot(ss_HbT, ss_HbT)
                 d_ssr = d - (alpha * ss_HbT)
-                ssr_ch_name.append(chan + ' SSR')
+                #ssr_ch_name.append(chan + ' SSR')
+                ssr_ch_name.append(chan)
                 ssr_data.append(d_ssr)
 
         if 'filt' in data_type:
@@ -311,37 +315,67 @@ class flexNIRs():
         else:
             self.ssrDF = pd.DataFrame(np.column_stack(ssr_data), columns=ssr_ch_name)
             
-    def get_data(self, data_type = None):
-        channels = ['SS Red', 'SS IR', 'D1 LS Red', 'D1 LL Red', 'D1 LS IR', 'D1 LL IR', 
-                    'D3 LS Red', 'D3 LL Red', 'D3 LS IR', 'D3 LL IR']
+    def get_data(self, data_type = None, channels = None, wv = None):
+        #Need way to mark SSR DF for the type of data it was run on?
+        if wv is None:
+            pass
+        elif ('red' in wv.lower()) or ('hbo' in wv.lower()):
+            color_chan = 'Red'
+        elif ('ir' in wv.lower() or ('hbr' in wv.lower())):
+            color_chan = 'IR'
+        elif ('both'.lower() in wv.lower()) or (wv is None):
+            color_chan = ['Red', 'IR']
+        elif 'hbt' in wv.lower(): #Need special case for total hemoglobin???
+            color_chan = 'HbT'
+
+        #If channels or wv are not specified, return all channels
+        if (channels is None) and (wv is None):
+            chs = self.ch_names.copy()
+            if 'hemo' in data_type.lower():
+                chs.extend(['SS HbT', 'D1 LS HbT', 'D1 LL HbT', 'D3 LS HbT', 'D3 LL HbT'])
+        #If only channel is specified, or wv is 'both' return both wavelengths for specified channel
+        elif (isinstance(channels, str)) and ((wv is None) or ('both'.lower() in wv.lower())):
+            chs = [channels + ' ' + color for color in color_chan]
+
+        #If a channel and wavelength are specified return that specific channel/color combination
+        elif (isinstance(channels, str)) and (isinstance(wv, str)):
+            chs = channels + ' ' + color_chan
+
+        #If a list of channels is passed
+        elif isinstance(channels, list):
+            #If a list of channels is passed, but no wavelength or 'both' is passed, return both wavelengths for specified channels
+            if (wv is None) or ('both'.lower() in wv.lower()):
+                chs = [ch + ' ' + color for color in color_chan for ch in channels]
+            # If a list of channels is passed, then a list of wavelengths must also be passed with the same order as the desired channels
+            elif isinstance(wv, list):
+                chs = [ch +  ' ' + color for ch,color in zip(channels, wv)]
+            else:
+                raise ValueError("A list of channels was passed. 'wv' must be a list of equal length with matching order to desired channels")
+
         if data_type == 'raw':
-            dataDF = self.raw_data.copy()
+            dataDF = self.raw_data[chs].copy()
         elif data_type == 'raw_filt':
-            dataDF = self.raw_data_f.copy()
+            dataDF = self.raw_data_f[chs].copy()
         elif data_type == 'OD':
-            dataDF = self.d_OD.copy()
+            dataDF = self.d_OD[chs].copy()
         elif data_type == 'OD_filt':
-            dataDF = self.d_OD_filt.copy()
+            dataDF = self.d_OD_filt[chs].copy()
         elif data_type == 'Mua':
-            dataDF = self.d_Mua.copy()
+            dataDF = self.d_Mua[chs].copy()
         elif data_type == 'Mua_filt':
-            dataDF = self.d_Mua_filt.copy()
+            dataDF = self.d_Mua_filt[chs].copy()
         elif data_type == 'Hemo':
-            channels = ['SS HbO', 'SS HbR', 'D1 LS HbO', 'D1 LL HbO', 'D1 LS HbR', 'D1 LL HbR',
-                        'D3 LS HbO', 'D3 LL HbO', 'D3 LS HbR', 'D3 LL HbR']
-            dataDF = self.hemoDF.copy()
+            dataDF = self.hemoDF[chs].copy()
         elif data_type == 'Hemo_filt':
-            channels = ['SS HbO', 'SS HbR', 'D1 LS HbO', 'D1 LL HbO', 'D1 LS HbR', 'D1 LL HbR',
-                        'D3 LS HbO', 'D3 LL HbO', 'D3 LS HbR', 'D3 LL HbR']
-            dataDF = self.hemoDF_f.copy()
+            dataDF = self.hemoDF_f[chs].copy()
         elif data_type == 'SSR':
-            dataDF = self.ssrDF.copy()
+            dataDF = self.ssrDF[chs].copy()
         elif data_type == 'SSR_filt':
-            dataDF =self.ssrDF_f.copy()
+            dataDF =self.ssrDF_f[chs].copy()
         else:
             raise ValueError("Data type not recognized. Data type must be 'raw', 'OD', 'Mua', 'Hemo', or 'SSR'. With '_filt' added for filtered versions.")
 
-        return dataDF, channels
+        return dataDF
 
     def overwrite_data(self, data_to_write, data_type = None):
 
@@ -407,22 +441,16 @@ class flexNIRs():
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
 
-    def plot_channel(self, data_type, channel, plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
+    def plot_channel(self, data_type, channel, wv = 'both', plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
                      show = True, legend = False, title = None):
 
         fs = self.fs
-        plotDF = self.get_data(data_type)[0]
 
-        #channel_pair = self.ch_pairs[channel]
-
-        if 'SSR' in data_type:
-            channel_pair = [ self.ch_dct[ch][0] + ' ' + self.ch_dct[ch][1] + ' SSR' for ch in self.ch_pairs[channel]]
-            channel_pair = [ch.replace('Red', 'HbO') for ch in channel_pair]
-            channel_pair = [ch.replace('IR', 'HbR') for ch in channel_pair]
-        elif 'Hemo' in data_type:
-            channel_pair = [ self.ch_dct[ch][0] + ' ' + self.ch_dct[ch][2] for ch in self.ch_pairs[channel]]
-        else:
-            channel_pair = [self.ch_dct[ch][0] + ' ' + self.ch_dct[ch][1] for ch in self.ch_pairs[channel]]
+        #Note, if a single color is passed, plotDF becomes a series instead of a dataframe
+        dataDF = self.get_data(data_type, channel, wv)
+        if isinstance(dataDF, pd.Series):
+            dataDF = pd.DataFrame(dataDF)
+        plotDF = dataDF.copy()
 
         pre_BL_idx_width = int(pre_time * fs)
         post_BL_idx_width = int(post_time * fs)
@@ -450,31 +478,35 @@ class flexNIRs():
 
                 plotDF.loc[plot_start_idx:plot_stop_idx, 'Trial Time'] = time
 
-            plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
+            #plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
 
             if plot_style == 'stacked':
 
-                fig, ax = plt.subplots(figsize=fig_size, nrows=2)
-                ax = ax.ravel()
-                for idx, chan in enumerate(channel_pair):
+                if len(dataDF.columns) == 1:
+                    fig, ax = plt.subplots(figsize=fig_size)
+                    sns.lineplot(data=plotDF, x='Trial Time', y=dataDF.columns[0], hue='Stim #', ax=ax, legend=legend)
+                else:
+                    fig, ax = plt.subplots(figsize=fig_size, nrows=len(dataDF.columns))
+                    ax = ax.ravel()
+                    for idx, chan in enumerate(dataDF.columns):
 
-                    # Shifts data so all trials start at 0
-                    if zero_shift:
-                        for stim_num in plotDF['Stim #'].unique():
-                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
-                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
-                                                                                 plotDF['Stim #'] == stim_num, chan] - \
-                                                                             plotDF.loc[zero_point, chan].item()
+                        # Shifts data so all trials start at 0
+                        if zero_shift:
+                            for stim_num in plotDF['Stim #'].unique():
+                                zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                                plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
+                                                                                     plotDF['Stim #'] == stim_num, chan] - \
+                                                                                 plotDF.loc[zero_point, chan].item()
 
-                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx], legend=legend)
-                    ax[idx].set_title(chan)
-                    ax[idx].set_xlabel('Time (s)')
-                    ax[idx].set_ylabel('A.U.')
+                        sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx], legend=legend)
+                        ax[idx].set_title(chan)
+                        ax[idx].set_xlabel('Time (s)')
+                        ax[idx].set_ylabel('A.U.')
 
-                # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
-                # last stim only
-                ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-                ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                        # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
+                        # last stim only
+                        ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                        ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
             elif plot_style== 'average':
                 fig, ax = plt.subplots(figsize=fig_size)
@@ -550,57 +582,55 @@ class flexNIRs():
             else:
                 return ax
 
-    def ssr_plot(self, data_type, channel, show_stim = False, show_ss = True, show_hr = False, hr_chan = 'b2b'):
+    def ssr_plot(self, data_type, channel, wv=None, show_stim = False, show_ss = True, show_hr = False, hr_chan = 'b2b'):
 
-        ssr_channel = channel + ' SSR'
+        #Get data. For this plot type only a single channel and wavelength should be specified
+        d = self.get_data(data_type, channels = channel, wv=wv)
 
-        d = self.get_data(data_type)[0]
-
-#        ch_name = self.name_dct[channel]
-
-        #if the data in ssrDF is hemoglobin, needs to change the name to include HbO instead of Red or HbR instead of IR
         #need to check if 'Hb' is in the column names
-        if 'Hb' in d.columns[0]:
-            if 'Red' in channel:
-                channel = channel.replace('Red', 'HbO')
-                ssr_channel = ssr_channel.replace('Red', 'HbO')
-            elif 'IR' in channel:
-                channel = channel.replace('IR', 'HbR')
-                ssr_channel = ssr_channel.replace('Red', 'HbO')
+        # if 'Hb' in d.columns[0]:
+        #     if 'Red' in channel:
+        #         channel = channel.replace('Red', 'HbO')
+        #         ssr_channel = ssr_channel.replace('Red', 'HbO')
+        #     elif 'IR' in channel:
+        #         channel = channel.replace('IR', 'HbR')
+        #         ssr_channel = ssr_channel.replace('Red', 'HbO')
 
+        if ('red' in wv.lower()) or ('hbo' in wv.lower()):
+            color_chan = 'Red'
+        elif ('ir' in wv.lower() or ('hbr' in wv.lower())):
+            color_chan = 'IR'
+        elif 'hbt' in wv.lower(): #Need special case for total hemoglobin???
+            color_chan = 'HbT'
+
+        #Get SSR regressed data
+        #If the data in ssrDF is hemoglobin, needs to change the name to include HbO instead of Red or HbR instead of IR
+        ssr_channel = channel + ' SSR'
         if 'filt' in data_type:
-            ssr_d = self.get_data(data_type = 'SSR_filt')[0]
+            ssr_d = self.get_data(data_type = 'SSR_filt', channels=channel, wv=wv)
         else:
-            ssr_d = self.get_data(data_type = 'SSR')[0]
+            ssr_d = self.get_data(data_type = 'SSR', channels=channel, wv=wv)
 
-        if 'Red' in channel:
-
-            if 'Hemo' in data_type:
-                ss_channel = 'SS HbO'
-            else:
-                ss_channel = 'SS Red'
-
-        elif 'IR' in channel:
-
-            if 'Hemo' in data_type:
-                ss_channel = 'SS HbR'
-            else:
-                ss_channel = 'SS IR'
-        elif 'HbT' in channel:
+        if 'Red' in color_chan:
+            ss_channel = 'SS Red'
+        elif 'IR' in color_chan:
+            ss_channel = 'SS IR'
+        elif 'HbT' in color_chan:
             ss_channel = 'SS HbT'
 
+        channel = channel + ' ' + color_chan
         print('Data Channel: ' + channel)
         print('Short-Separation Channel: ' + ss_channel)
 
         # Construct dictionary of original data, SSR regressed data, and SS channel for plotting
         if show_ss:
-            plot_dct = {'Orig. Data' : d[channel], #Non-regressed data
-                        'SSR Data' : ssr_d[ssr_channel], #Data with short-channel regression
-                        'SS Data' : d[ss_channel], #Short-channel from non-regressed data
+            plot_dct = {'Orig. Data' : d, #Non-regressed data
+                        'SSR Data' : ssr_d, #Data with short-channel regression
+                        'SS Data' : self.get_data(data_type)[ss_channel] #Short-channel from non-regressed data
                         }
         else:
-            plot_dct = {'Orig. Data' : d[channel], #Non-regressed data
-                        'SSR Data' : ssr_d[ssr_channel], #Data with short-channel regression
+            plot_dct = {'Orig. Data' : d, #Non-regressed data
+                        'SSR Data' : ssr_d, #Data with short-channel regression
                         }
 
         #fig = go.Figure()
@@ -627,9 +657,9 @@ class flexNIRs():
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
 
-    def plot_channel_interactive(self, data_type, channel, show_stim = False, show_hr = False, hr_chan = 'b2b'):
+    def plot_channel_interactive(self, data_type, channel, wv = None, show_stim = False, show_hr = False, hr_chan = 'b2b'):
 
-        d = self.get_data(data_type)[0][channel]
+        d = self.get_data(data_type, channel, wv)
 
         dct = {'Data':d, 'Time (s)':self.time}
 
