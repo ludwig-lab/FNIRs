@@ -441,20 +441,31 @@ class flexNIRs():
                 raise ValueError('Stimulation alignment data not found.')
         fig.show()
 
-    def plot_channel(self, data_type, channel, wv = 'both', plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
-                     show = True, legend = False, title = None):
+    def plot_channel(self, data_type, channel, wv = 'red', plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
+                     show = True, axis = None, legend = False, title = None):
+
+        #Reduce functionality to single wavelength. Therefore wv must be either 'red', 'ir', 'or 'hbt'
+
+        fig, ax = _plt_setup_fig_axis(axis, fig_size)
+
+        if ('red' in wv.lower()) or ('hbo' in wv.lower()):
+            color_chan = 'Red'
+        elif ('ir' in wv.lower() or ('hbr' in wv.lower())):
+            color_chan = 'IR'
+        elif 'hbt' in wv.lower(): #Need special case for total hemoglobin???
+            color_chan = 'HbT'
+
+        plot_chan = channel + ' ' + color_chan
 
         fs = self.fs
-
-        #Note, if a single color is passed, plotDF becomes a series instead of a dataframe
-        dataDF = self.get_data(data_type, channel, wv)
-        if isinstance(dataDF, pd.Series):
-            dataDF = pd.DataFrame(dataDF)
-        plotDF = dataDF.copy()
+        plotDF = pd.DataFrame(self.get_data(data_type, channel, wv))
+        plotDF['Time (s)'] = self.time
+        #plotDF = dataDF.copy()
 
         pre_BL_idx_width = int(pre_time * fs)
         post_BL_idx_width = int(post_time * fs)
 
+        #Label Stimulations by stim # for stacked plotting
         if self.stimDF is None:
             raise ValueError('Stimulation alignment data not found.')
         else:
@@ -478,109 +489,103 @@ class flexNIRs():
 
                 plotDF.loc[plot_start_idx:plot_stop_idx, 'Trial Time'] = time
 
-            #plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
-
             if plot_style == 'stacked':
 
-                if len(dataDF.columns) == 1:
-                    fig, ax = plt.subplots(figsize=fig_size)
-                    sns.lineplot(data=plotDF, x='Trial Time', y=dataDF.columns[0], hue='Stim #', ax=ax, legend=legend)
-                else:
-                    fig, ax = plt.subplots(figsize=fig_size, nrows=len(dataDF.columns))
-                    ax = ax.ravel()
-                    for idx, chan in enumerate(dataDF.columns):
+                if zero_shift:
+                    plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
+                    for stim_num in plotDF['Stim #'].unique():
+                        zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] = (
+                                plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
-                        # Shifts data so all trials start at 0
-                        if zero_shift:
-                            for stim_num in plotDF['Stim #'].unique():
-                                zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
-                                plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
-                                                                                     plotDF['Stim #'] == stim_num, chan] - \
-                                                                                 plotDF.loc[zero_point, chan].item()
-
-                        sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx], legend=legend)
-                        ax[idx].set_title(chan)
-                        ax[idx].set_xlabel('Time (s)')
-                        ax[idx].set_ylabel('A.U.')
-
-                        # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
-                        # last stim only
-                        ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-                        ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-
-            elif plot_style== 'average':
-                fig, ax = plt.subplots(figsize=fig_size)
-
-                for idx, chan in enumerate(channel_pair):
-                    # Shifts data so all trials start at 0
-                    if zero_shift:
-                        for stim_num in plotDF['Stim #'].unique():
-                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
-                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = (
-                                    plotDF.loc[plotDF['Stim #'] == stim_num, chan] - plotDF.loc[zero_point, chan].item())
-
-                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, errorbar='sd', ax=ax, label=chan)
+                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, hue='Stim #', ax=ax, legend=False)
                 ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
-            elif plot_style == 'Full':
+            elif plot_style== 'mean':
 
-                fig, ax = plt.subplots(figsize=fig_size, nrows=3, sharex=True)
-                ax = ax.ravel()
-                for idx, chan in enumerate(channel_pair):
+                if zero_shift:
+                    plotDF.dropna(axis=0, subset=['Stim #'], inplace=True)
+                    for stim_num in plotDF['Stim #'].unique():
+                        zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] = (
+                                plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
-                    if zero_shift:
-                        for stim_num in plotDF['Stim #'].unique():
-                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
-                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = (
-                                    plotDF.loc[plotDF['Stim #'] == stim_num, chan] - plotDF.loc[zero_point, chan].item())
+                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
+                ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
-                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, errorbar='sd', ax=ax[0], label=chan)
-                ax[0].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-                ax[0].set_title(channel + ' Trial Average (mean ' + r'$\pm$' + ' s.d.)')
-                ax[0].set_ylabel('A.U.')
-                ax[0].legend(loc='upper right')
+            elif plot_style == 'full':
 
-                for idx, chan in enumerate(channel_pair):
+                sns.lineplot(data=plotDF, x='Time (s)', y=plot_chan, ax=ax, label=plot_chan)
+                for param in self.stimDF.index:
+                    ax.axvspan(xmin=stimDF.loc[param]['fNIRs onset time (s)'],
+                                            xmax=stimDF.loc[param]['fNIRs offset time (s)'], color='gray', alpha=0.2)
 
-                    # Shifts data so all trials start at 0
-                    if zero_shift:
-                        for stim_num in plotDF['Stim #'].unique():
-                            zero_point = plotDF.loc[plotDF['Stim #'] == stim_num, 'Trial Time'].abs().idxmin()
-                            plotDF.loc[plotDF['Stim #'] == stim_num, chan] = plotDF.loc[
-                                                                                 plotDF['Stim #'] == stim_num, chan] - \
-                                                                             plotDF.loc[zero_point, chan].item()
+                # ax[0].set_title(channel + ' Trial Average (mean ' + r'$\pm$' + ' s.d.)')
+                # ax[0].set_ylabel('A.U.')
+                # ax[0].legend(loc='upper right')
 
-                    sns.lineplot(data=plotDF, x='Trial Time', y=chan, hue='Stim #', ax=ax[idx + 1], legend=legend)
-                    ax[idx + 1].set_title(chan)
-                    ax[idx + 1].set_xlabel('Time (s)')
-                    ax[idx + 1].set_ylabel('A.U.')
+            elif plot_style == 'interstim stacked':
 
-                # This shading assumes that all stimulations within file were the same duration.  It uses the duration of the
-                # last stim only
-                ax[1].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-                ax[2].axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-                if legend:
-                    ax[1].legend(loc='upper right')
-                    ax[2].legend(loc='upper right')
+                # Label interstim datapoints based on preceding stimulation
+                onset_indices = self.stimDF['fNIRs onset index'].values
+                offset_indices = self.stimDF['fNIRs offset index'].values
 
-            fig.tight_layout()
+                interstim_idx = [(offset_indices[i], onset_indices[i + 1]) for i in np.arange(len(onset_indices) - 1)]
+                interstim_sample_len = [idx2 - idx1 for idx1, idx2 in interstim_idx]
+                interstim_idx.append((offset_indices[-1], offset_indices[-1] + interstim_sample_len[-1]))
 
-            if title:
-                fig.suptitle(title)
+                for idx, (start, stop) in enumerate(interstim_idx):
+                    plotDF.loc[start:stop, 'Interstim #'] = str(idx + 1)
 
-            if show:
-                backend = mpl_get_backend()
-                fig.tight_layout()
-                if backend == "module://ipympl.backend_nbagg":
-                    fig.canvas.header_visible = False
-                    fig.canvas.footer_visible = False
-                    fig.show()
-                else:
-                    plt.show()
-                    plt.close(fig)
-                return None
-            else:
-                return ax
+                    # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
+                    time_span = stop - start + 1
+                    time = np.arange(0, time_span, 1) / fs
+
+                    plotDF.loc[start:stop, 'Trial Time'] = time
+                
+                if zero_shift:
+                    plotDF.dropna(axis=0, subset=['Interstim #'], inplace=True)
+                    for stim_num in plotDF['Interstim #'].unique():
+                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] = (
+                                plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
+
+                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, hue='InterInterstim #', ax=ax, legend=False)
+                #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+            elif plot_style == 'interstim mean':
+
+                # Label interstim datapoints based on preceding stimulation
+                onset_indices = self.stimDF['fNIRs onset index'].values
+                offset_indices = self.stimDF['fNIRs offset index'].values
+
+                interstim_idx = [(offset_indices[i], onset_indices[i + 1]) for i in np.arange(len(onset_indices) - 1)]
+                interstim_sample_len = [idx2 - idx1 for idx1, idx2 in interstim_idx]
+                interstim_idx.append((offset_indices[-1], offset_indices[-1] + interstim_sample_len[-1]))
+
+                for idx, (start, stop) in enumerate(interstim_idx):
+                    plotDF.loc[start:stop, 'Interstim #'] = str(idx + 1)
+
+                    # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
+                    time_span = stop - start + 1
+                    time = np.arange(0, time_span, 1) / fs
+
+                    plotDF.loc[start:stop, 'Trial Time'] = time
+
+                if zero_shift:
+                    plotDF.dropna(axis=0, subset=['Interstim #'], inplace=True)
+                    for stim_num in plotDF['Interstim #'].unique():
+                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] = (
+                                plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] - plotDF.loc[
+                            zero_point, plot_chan].item())
+
+                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
+                #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+
+        return _plt_show_fig(fig, ax, show)
+
 
     def ssr_plot(self, data_type, channel, wv=None, show_stim = False, show_ss = True, show_hr = False, hr_chan = 'b2b'):
 
