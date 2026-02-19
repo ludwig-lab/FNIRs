@@ -442,7 +442,7 @@ class flexNIRs():
         fig.show()
 
     def plot_channel(self, data_type, channel, wv = 'red', plot_style = 'stacked', pre_time=5, post_time=30, zero_shift = False, fig_size = (10,10),
-                     show = True, axis = None, legend = False, title = None):
+                     show = True, axis = None, legend = False, title = None, **kwargs):
 
         #Reduce functionality to single wavelength. Therefore wv must be either 'red', 'ir', 'or 'hbt'
 
@@ -489,6 +489,23 @@ class flexNIRs():
 
                 plotDF.loc[plot_start_idx:plot_stop_idx, 'Trial Time'] = time
 
+            # Label interstim datapoints based on preceding stimulation
+            onset_indices = self.stimDF['fNIRs onset index'].values
+            offset_indices = self.stimDF['fNIRs offset index'].values
+
+            interstim_idx = [(offset_indices[i], onset_indices[i + 1]) for i in np.arange(len(onset_indices) - 1)]
+            interstim_sample_len = [idx2 - idx1 for idx1, idx2 in interstim_idx]
+            interstim_idx.append((offset_indices[-1], offset_indices[-1] + interstim_sample_len[-1]))
+
+            for idx, (start, stop) in enumerate(interstim_idx):
+                plotDF.loc[start:stop, 'Interstim #'] = str(idx + 1)
+
+                # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
+                time_span = stop - start + 1
+                time = np.arange(0, time_span, 1) / fs
+
+                plotDF.loc[start:stop, 'Interstim Time'] = time
+
             if plot_style == 'stacked':
 
                 if zero_shift:
@@ -499,7 +516,9 @@ class flexNIRs():
                                 plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
                 sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, hue='Stim #', ax=ax, legend=False)
-                ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+                if (pre_time != 0) and (post_time != 0):
+                    ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
             elif plot_style== 'mean':
 
@@ -511,11 +530,12 @@ class flexNIRs():
                                 plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
                 sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
-                ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                if (pre_time != 0) and (post_time != 0):
+                    ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
             elif plot_style == 'full':
 
-                sns.lineplot(data=plotDF, x='Time (s)', y=plot_chan, ax=ax, label=plot_chan)
+                sns.lineplot(data=plotDF, x='Time (s)', y=plot_chan, ax=ax, label=plot_chan, **kwargs)
                 for param in self.stimDF.index:
                     ax.axvspan(xmin=stimDF.loc[param]['fNIRs onset time (s)'],
                                             xmax=stimDF.loc[param]['fNIRs offset time (s)'], color='gray', alpha=0.2)
@@ -526,61 +546,27 @@ class flexNIRs():
 
             elif plot_style == 'interstim stacked':
 
-                # Label interstim datapoints based on preceding stimulation
-                onset_indices = self.stimDF['fNIRs onset index'].values
-                offset_indices = self.stimDF['fNIRs offset index'].values
-
-                interstim_idx = [(offset_indices[i], onset_indices[i + 1]) for i in np.arange(len(onset_indices) - 1)]
-                interstim_sample_len = [idx2 - idx1 for idx1, idx2 in interstim_idx]
-                interstim_idx.append((offset_indices[-1], offset_indices[-1] + interstim_sample_len[-1]))
-
-                for idx, (start, stop) in enumerate(interstim_idx):
-                    plotDF.loc[start:stop, 'Interstim #'] = str(idx + 1)
-
-                    # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
-                    time_span = stop - start + 1
-                    time = np.arange(0, time_span, 1) / fs
-
-                    plotDF.loc[start:stop, 'Trial Time'] = time
-                
                 if zero_shift:
                     plotDF.dropna(axis=0, subset=['Interstim #'], inplace=True)
                     for stim_num in plotDF['Interstim #'].unique():
-                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Interstim Time'].abs().idxmin()
                         plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] = (
                                 plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
-                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, hue='InterInterstim #', ax=ax, legend=False)
+                sns.lineplot(data=plotDF, x='Interstim Time', y=plot_chan, hue='Interstim #', ax=ax, legend=False)
                 #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
             elif plot_style == 'interstim mean':
 
-                # Label interstim datapoints based on preceding stimulation
-                onset_indices = self.stimDF['fNIRs onset index'].values
-                offset_indices = self.stimDF['fNIRs offset index'].values
-
-                interstim_idx = [(offset_indices[i], onset_indices[i + 1]) for i in np.arange(len(onset_indices) - 1)]
-                interstim_sample_len = [idx2 - idx1 for idx1, idx2 in interstim_idx]
-                interstim_idx.append((offset_indices[-1], offset_indices[-1] + interstim_sample_len[-1]))
-
-                for idx, (start, stop) in enumerate(interstim_idx):
-                    plotDF.loc[start:stop, 'Interstim #'] = str(idx + 1)
-
-                    # Construct time array based on sampling frequency and number of indices with time zero at stimulation start
-                    time_span = stop - start + 1
-                    time = np.arange(0, time_span, 1) / fs
-
-                    plotDF.loc[start:stop, 'Trial Time'] = time
-
                 if zero_shift:
                     plotDF.dropna(axis=0, subset=['Interstim #'], inplace=True)
                     for stim_num in plotDF['Interstim #'].unique():
-                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Trial Time'].abs().idxmin()
+                        zero_point = plotDF.loc[plotDF['Interstim #'] == stim_num, 'Interstim Time'].abs().idxmin()
                         plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] = (
                                 plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] - plotDF.loc[
                             zero_point, plot_chan].item())
 
-                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
+                sns.lineplot(data=plotDF, x='Interstim Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
                 #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
 
 
