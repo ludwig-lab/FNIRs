@@ -446,7 +446,7 @@ class flexNIRs():
 
         #Reduce functionality to single wavelength. Therefore wv must be either 'red', 'ir', 'or 'hbt'
 
-        fig, ax = _plt_setup_fig_axis(axis, fig_size)
+        fig, ax = _plt_setup_fig_axis(axis, fig_size, layout='constrained')
 
         if ('red' in wv.lower()) or ('hbo' in wv.lower()):
             color_chan = 'Red'
@@ -519,6 +519,7 @@ class flexNIRs():
 
                 if (pre_time != 0) and (post_time != 0):
                     ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                ax.set(ylabel = '', title = plot_chan + '\nInd. Stims')
 
             elif plot_style== 'mean':
 
@@ -529,9 +530,11 @@ class flexNIRs():
                         plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] = (
                                 plotDF.loc[plotDF['Stim #'] == stim_num, plot_chan] - plotDF.loc[zero_point, plot_chan].item())
 
-                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
+                sns.lineplot(data=plotDF, x='Trial Time', y=plot_chan, errorbar='sd', ax=ax)
                 if (pre_time != 0) and (post_time != 0):
                     ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+
+                ax.set(ylabel='', title=plot_chan + '\nAvg. Stim')
 
             elif plot_style == 'full':
 
@@ -539,6 +542,7 @@ class flexNIRs():
                 for param in self.stimDF.index:
                     ax.axvspan(xmin=stimDF.loc[param]['fNIRs onset time (s)'],
                                             xmax=stimDF.loc[param]['fNIRs offset time (s)'], color='gray', alpha=0.2)
+                ax.legend(loc = 'upper right')
 
                 # ax[0].set_title(channel + ' Trial Average (mean ' + r'$\pm$' + ' s.d.)')
                 # ax[0].set_ylabel('A.U.')
@@ -555,6 +559,7 @@ class flexNIRs():
 
                 sns.lineplot(data=plotDF, x='Interstim Time', y=plot_chan, hue='Interstim #', ax=ax, legend=False)
                 #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
+                ax.set(ylabel='', title='Interstim Periods')
 
             elif plot_style == 'interstim mean':
 
@@ -566,9 +571,9 @@ class flexNIRs():
                                 plotDF.loc[plotDF['Interstim #'] == stim_num, plot_chan] - plotDF.loc[
                             zero_point, plot_chan].item())
 
-                sns.lineplot(data=plotDF, x='Interstim Time', y=plot_chan, errorbar='sd', ax=ax, label=plot_chan)
+                sns.lineplot(data=plotDF, x='Interstim Time', y=plot_chan, errorbar='sd', ax=ax)
                 #ax.axvspan(xmin=0, xmax=stimDF.loc[stim, 'duration (ms)'] * 1e-3, color='gray', alpha=0.2)
-
+                ax.set(ylabel='', title='Avg. Interstim')
 
         return _plt_show_fig(fig, ax, show)
 
