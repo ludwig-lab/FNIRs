@@ -950,8 +950,9 @@ def filter_hr(data, cutoff = 10, downsample = False, downsample_factor = 10, che
 
     if downsample:
         ds_ECGr = signal.decimate(raw_ecg, downsample_factor, zero_phase = True)
-        ds_time = signal.decimate(time, downsample_factor, zero_phase = True)
         ds_ECGf = signal.decimate(ecg_f, downsample_factor, zero_phase = True)
+
+        ds_time = np.arange(len(ds_ECGr)) * (downsample_factor / data.sample_rate)
 
         """Check alignment of filtered and downsampled signal against original"""
         if check_plot:
