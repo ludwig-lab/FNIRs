@@ -429,7 +429,7 @@ class flexNIRs():
         """Plotly plot for looking at stim artifact in flexNIRs data"""
         fig = go.Figure()
         fig.add_trace(
-            go.Scatter(x=artDF['Time (s)'], y=artDF[channel], customdata=artDF.index, hovertemplate='%{customdata:.1f}'))
+            go.Scatter(x=artDF['Time (s)'], y=artDF[channel]))#, customdata=artDF.index, hovertemplate='%{customdata:.1f}'))
 
         if show_stim == True:
             if self.stimDF is not None:
@@ -1007,6 +1007,11 @@ def calc_hr(data, fs, peak_height, smoothing_window_length = 5, check_plot = Fal
         fig.add_trace(go.Scatter(x = time[peaks], y = d[peaks], mode = 'markers'), secondary_y = True)
         fig.add_trace(go.Scatter(x = time,y = d, name = 'ECG Trace'), secondary_y = True)
         fig.add_trace(go.Scatter(x = ecgDF['Time (s)'], y = ecgDF['b2b bpm'], name = 'HR (bpm)'))#, secondary_y=True)
+
+        fig.update_xaxes(title_text = 'Time (s)')
+        fig.update_yaxes(title_text='HR (bpm)')
+        fig.update_yaxes(title_text='ECG (uV)', secondary_y = True)
+
         fig.show()
 
     return ecgDF
